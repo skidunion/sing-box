@@ -11,8 +11,7 @@ on:
     - cron: "17 */6 * * *"
 
 permissions:
-  actions: write
-  contents: write
+  contents: read
 
 concurrency:
   group: sync-upstream-stable-release
@@ -24,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
       UPSTREAM_REPOSITORY: SagerNet/sing-box
     steps:
       - name: Checkout stable
@@ -32,6 +31,7 @@ jobs:
         with:
           ref: stable
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Select upstream release
         id: upstream
@@ -113,24 +113,3 @@ jobs:
             --title "${VERSION}" \
             --notes "${body}" \
             --latest
-
-      - name: Start release workflows
-        if: steps.fork_release.outputs.exists != 'true'
-        env:
-          TAG: ${{ steps.upstream.outputs.tag }}
-          VERSION: ${{ steps.upstream.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          dispatch() {
-            local workflow=$1
-            local input=$2
-            local value=$3
-            gh workflow run "${workflow}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --ref stable \
-              --field "${input}=${value}"
-          }
-
-          dispatch linux.yml version "${VERSION}"
-          dispatch docker.yml tag "${TAG}"
