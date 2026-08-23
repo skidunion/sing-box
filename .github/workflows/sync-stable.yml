@@ -1,0 +1,136 @@
+name: Sync Upstream Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream release tag (leave empty for latest)"
+        required: false
+        type: string
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: sync-upstream-stable-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPOSITORY: SagerNet/sing-box
+    steps:
+      - name: Checkout stable
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: stable
+          fetch-depth: 0
+
+      - name: Select upstream release
+        id: upstream
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          tag="${REQUESTED_TAG}"
+          if [[ -z "${tag}" ]]; then
+            tag=$(gh api \
+              "repos/${UPSTREAM_REPOSITORY}/releases/latest" \
+              --jq '.tag_name')
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported stable release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for existing fork release
+        id: fork_release
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+            echo "Release ${TAG} already exists; nothing to do."
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Merge upstream tag and push
+        if: steps.fork_release.outputs.exists != 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin \
+            refs/heads/stable:refs/remotes/origin/stable
+          git checkout -B stable refs/remotes/origin/stable
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; continuing with release publication."
+            exit 0
+          fi
+
+          upstream_ref="refs/upstream-tags/${TAG}"
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            "refs/tags/${TAG}:${upstream_ref}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-ff "${upstream_ref}" -m "Merge tag '${TAG}' into stable"
+          git tag "${TAG}"
+          git push --atomic origin \
+            HEAD:refs/heads/stable \
+            "refs/tags/${TAG}:refs/tags/${TAG}"
+
+      - name: Publish GitHub release
+        if: steps.fork_release.outputs.exists != 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          body="Upgrade to sing-box [${VERSION}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${TAG})."
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "${VERSION}" \
+            --notes "${body}" \
+            --latest
+
+      - name: Start release workflows
+        if: steps.fork_release.outputs.exists != 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          dispatch() {
+            local workflow=$1
+            local input=$2
+            local value=$3
+            gh workflow run "${workflow}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --ref stable \
+              --field "${input}=${value}"
+          }
+
+          dispatch linux.yml version "${VERSION}"
+          dispatch docker.yml tag "${TAG}"
