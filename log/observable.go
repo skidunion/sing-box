@@ -14,7 +14,7 @@ import (
 	"github.com/sagernet/sing/service/filemanager"
 )
 
-var _ Factory = (*defaultFactory)(nil)
+var _ ObservableFactory = (*defaultFactory)(nil)
 
 type defaultFactory struct {
 	ctx               context.Context
@@ -23,7 +23,8 @@ type defaultFactory struct {
 	writer            io.Writer
 	file              *os.File
 	filePath          string
-	platformWriter    PlatformWriter
+	platformWriters   atomic.Pointer[[]PlatformWriter]
+	needConsole       bool
 	needObservable    bool
 	level             Level
 	subscriber        *observable.Subscriber[Entry]
@@ -58,17 +59,17 @@ func NewDefaultFactory(
 		},
 		writer:         writer,
 		filePath:       filePath,
-		platformWriter: platformWriter,
+		needConsole:    writer != io.Discard || filePath != "",
 		needObservable: needObservable,
 		level:          LevelTrace,
 		subscriber:     observable.NewSubscriber[Entry](128),
 	}
+	if platformWriter != nil {
+		factory.platformWriters.Store(&[]PlatformWriter{platformWriter})
+	}
 	/*if platformWriter != nil {
 		factory.platformFormatter.DisableColors = platformWriter.DisableColors()
 	}*/
-	if needObservable {
-		factory.observer = observable.NewObserver[Entry](factory.subscriber, 64)
-	}
 	return factory
 }
 
@@ -82,6 +83,10 @@ func (f *defaultFactory) Start() error {
 			f.writer = logFile
 			f.file = logFile
 		}
+		f.needConsole = f.writer != io.Discard
+	}
+	if f.needObservable {
+		f.observer = observable.NewObserver[Entry](f.subscriber, 64)
 	}
 	f.startAccess.Lock()
 	pendingEntries := f.pendingEntries
@@ -102,6 +107,19 @@ func (f *defaultFactory) Close() error {
 		common.PtrOrNil(f.file),
 		f.subscriber,
 	)
+}
+
+func (f *defaultFactory) AttachPlatformWriter(writer PlatformWriter) {
+	writers := append(f.loadPlatformWriters(), writer)
+	f.platformWriters.Store(&writers)
+}
+
+func (f *defaultFactory) loadPlatformWriters() []PlatformWriter {
+	writers := f.platformWriters.Load()
+	if writers == nil {
+		return nil
+	}
+	return *writers
 }
 
 func (f *defaultFactory) Level() Level {
@@ -129,19 +147,7 @@ func (f *defaultFactory) UnSubscribe(sub observable.Subscription[Entry]) {
 }
 
 func (f *defaultFactory) output(ctx context.Context, level Level, tag string, message string, timestamp time.Time) {
-	if f.needObservable {
-		formatted, formattedSimple := f.formatter.FormatWithSimple(ctx, level, tag, message, timestamp)
-		if level <= f.level {
-			if level == LevelPanic {
-				panic(formatted)
-			}
-			f.writer.Write([]byte(formatted))
-			if level == LevelFatal {
-				os.Exit(1)
-			}
-		}
-		f.subscriber.Emit(Entry{level, formattedSimple})
-	} else if level <= f.level {
+	if level <= f.level && (f.needConsole || level == LevelPanic || level == LevelFatal) {
 		formatted := f.formatter.Format(ctx, level, tag, message, timestamp)
 		if level == LevelPanic {
 			panic(formatted)
@@ -151,8 +157,15 @@ func (f *defaultFactory) output(ctx context.Context, level Level, tag string, me
 			os.Exit(1)
 		}
 	}
-	if f.platformWriter != nil {
-		f.platformWriter.WriteMessage(level, f.platformFormatter.Format(ctx, level, tag, message, timestamp))
+	if f.needObservable {
+		f.subscriber.Emit(Entry{level, f.formatter.FormatSimple(ctx, tag, message)})
+	}
+	platformWriters := f.loadPlatformWriters()
+	if len(platformWriters) > 0 {
+		platformMessage := f.platformFormatter.Format(ctx, level, tag, message, timestamp)
+		for _, platformWriter := range platformWriters {
+			platformWriter.WriteMessage(level, platformMessage)
+		}
 	}
 }
 
@@ -165,7 +178,8 @@ type observableLogger struct {
 
 func (l *observableLogger) Log(ctx context.Context, level Level, args []any) {
 	level = OverrideLevelFromContext(level, ctx)
-	if level > l.level && l.platformWriter == nil && !l.needObservable {
+	platformWriters := l.loadPlatformWriters()
+	if level > l.level && len(platformWriters) == 0 && !l.needObservable {
 		return
 	}
 	nowTime := time.Now()
