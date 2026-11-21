@@ -24,7 +24,6 @@ type FallbackOutboundOptions struct {
 	Timeout       badoption.Duration `json:"timeout,omitempty"`
 	FailureCount  int                `json:"failure_count,omitempty"`
 	RecoveryCount int                `json:"recovery_count,omitempty"`
-	MetricsListen string             `json:"metrics_listen,omitempty"`
 }
 
 type FallbackCheck struct {

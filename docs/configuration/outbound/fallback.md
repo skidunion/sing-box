@@ -17,8 +17,7 @@ Switching the selection leaves established connections on their previous member.
   "interval": "30s",
   "timeout": "5s",
   "failure_count": 10,
-  "recovery_count": 2,
-  "metrics_listen": "127.0.0.1:9201"
+  "recovery_count": 2
 }
 ```
 
@@ -28,5 +27,5 @@ families. An omitted `status_code` accepts any 2xx response. All checks must
 pass for a cycle to succeed. Checks start immediately. Members are eligible
 in configured order until they reach the failure threshold.
 
-The optional address serves read-only Prometheus metrics at `/metrics`.
-A private listener or source filtering is recommended for remote scraping.
+Each fallback group registers its selection, health, and probe results with the
+[Metrics service](/configuration/service/metrics/) when configured.

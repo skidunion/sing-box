@@ -1,63 +1,51 @@
 package group
 
 import (
-	"fmt"
-	"net"
-	"net/http"
-	"strings"
-	"time"
+	"strconv"
 
-	"github.com/sagernet/sing-box/adapter"
-	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-func (f *Fallback) startMetrics(scope *adapter.Scope) error {
-	listener, err := net.Listen("tcp", f.metricsListen)
-	if err != nil {
-		return E.Cause(err, "listen for fallback metrics")
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /metrics", f.writeMetrics)
-	server := &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      5 * time.Second,
-	}
-	scope.Add(server.Close)
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			f.logger.Error("serve fallback metrics: ", err)
-		}
-	}()
-	return nil
+type fallbackCollector struct {
+	fallback          *Fallback
+	selected, healthy *prometheus.Desc
+	probeSuccess      *prometheus.Desc
 }
 
-func (f *Fallback) writeMetrics(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	status := f.status.Load()
-	var metrics strings.Builder
-	metrics.WriteString("# TYPE sing_box_fallback_selected gauge\n")
-	for i, tag := range f.tags {
-		fmt.Fprintf(&metrics, "sing_box_fallback_selected{outbound=%q} %d\n", tag, metricBool(i == status.selected))
+func newFallbackCollector(f *Fallback) *fallbackCollector {
+	labels := prometheus.Labels{"group": f.Tag()}
+	return &fallbackCollector{
+		fallback:     f,
+		selected:     prometheus.NewDesc("sing_box_fallback_selected", "Whether the outbound is currently selected.", []string{"outbound"}, labels),
+		healthy:      prometheus.NewDesc("sing_box_fallback_healthy", "Whether the outbound is healthy after applying failure and recovery thresholds.", []string{"outbound"}, labels),
+		probeSuccess: prometheus.NewDesc("sing_box_fallback_probe_success", "Result of the most recent HTTPS probe.", []string{"outbound", "check", "url", "ip_version"}, labels),
 	}
-	metrics.WriteString("# TYPE sing_box_fallback_healthy gauge\n")
+}
+
+func (c *fallbackCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.selected
+	ch <- c.healthy
+	ch <- c.probeSuccess
+}
+
+func (c *fallbackCollector) Collect(ch chan<- prometheus.Metric) {
+	f := c.fallback
+	status := f.status.Load()
 	for i, tag := range f.tags {
+		ch <- prometheus.MustNewConstMetric(c.selected, prometheus.GaugeValue, metricBool(i == status.selected), tag)
 		member := status.members[i]
 		if member.results != nil {
-			fmt.Fprintf(&metrics, "sing_box_fallback_healthy{outbound=%q} %d\n", tag, metricBool(!member.failed))
+			ch <- prometheus.MustNewConstMetric(c.healthy, prometheus.GaugeValue, metricBool(!member.failed), tag)
 		}
-	}
-	metrics.WriteString("# TYPE sing_box_fallback_probe_success gauge\n")
-	for i, tag := range f.tags {
-		for j, passed := range status.members[i].results {
+		for j, passed := range member.results {
 			check := f.checks[j]
-			fmt.Fprintf(&metrics, "sing_box_fallback_probe_success{outbound=%q,url=%q,ip_version=%q} %d\n", tag, check.URL, fmt.Sprint(check.IPVersion), metricBool(passed))
+			ch <- prometheus.MustNewConstMetric(c.probeSuccess, prometheus.GaugeValue, metricBool(passed),
+				tag, strconv.Itoa(j+1), check.URL, strconv.Itoa(check.IPVersion))
 		}
 	}
-	_, _ = w.Write([]byte(metrics.String()))
 }
 
-func metricBool(value bool) int {
+func metricBool(value bool) float64 {
 	if value {
 		return 1
 	}

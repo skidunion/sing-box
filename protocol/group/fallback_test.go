@@ -11,9 +11,14 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/adapter/outbound"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/service"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func TestFallbackRequiredChecksAndPriority(t *testing.T) {
@@ -103,14 +108,22 @@ func TestFallbackProbeUsesMemberAndExpectedStatus(t *testing.T) {
 }
 
 func TestFallbackMetricsDescribeActiveMemberAndFailedChecks(t *testing.T) {
-	f := &Fallback{tags: []string{"test-tunnel", "direct-out"}, checks: []option.FallbackCheck{{URL: "https://example.com", IPVersion: 6}}}
+	f := &Fallback{
+		Adapter: outbound.NewAdapter(C.TypeFallback, "egress-out", nil, nil),
+		tags:    []string{"test-tunnel", "direct-out"},
+		checks:  []option.FallbackCheck{{URL: "https://example.com", IPVersion: 6}},
+	}
 	start := &fallbackStatus{members: make([]fallbackMemberStatus, 2)}
 	f.status.Store(advanceFallback(start, [][]bool{{false}, {false}}, 1, 1))
+	registry := prometheus.NewRegistry()
+	if err := registry.Register(newFallbackCollector(f)); err != nil {
+		t.Fatal(err)
+	}
 	w := httptest.NewRecorder()
-	f.writeMetrics(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	for _, line := range []string{
-		`sing_box_fallback_selected{outbound="direct-out"} 1`,
-		`sing_box_fallback_probe_success{outbound="direct-out",url="https://example.com",ip_version="6"} 0`,
+		`sing_box_fallback_selected{group="egress-out",outbound="direct-out"} 1`,
+		`sing_box_fallback_probe_success{check="1",group="egress-out",ip_version="6",outbound="direct-out",url="https://example.com"} 0`,
 	} {
 		if !strings.Contains(w.Body.String(), line+"\n") {
 			t.Fatalf("missing %s in %s", line, w.Body.String())

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/service/metrics"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -42,7 +42,6 @@ type Fallback struct {
 	timeout       time.Duration
 	failureCount  int
 	recoveryCount int
-	metricsListen string
 	status        atomic.Pointer[fallbackStatus]
 }
 
@@ -95,11 +94,6 @@ func NewFallback(ctx context.Context, _ adapter.Router, logger log.ContextLogger
 	if options.FailureCount < 0 || options.RecoveryCount < 0 {
 		return nil, E.New("fallback failure_count and recovery_count must be positive")
 	}
-	if options.MetricsListen != "" {
-		if _, err := netip.ParseAddrPort(options.MetricsListen); err != nil {
-			return nil, E.Cause(err, "invalid fallback metrics_listen")
-		}
-	}
 	fallback := &Fallback{
 		Adapter:       outbound.NewAdapter(C.TypeFallback, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.Outbounds),
 		manager:       service.FromContext[adapter.OutboundManager](ctx),
@@ -110,7 +104,6 @@ func NewFallback(ctx context.Context, _ adapter.Router, logger log.ContextLogger
 		timeout:       timeout,
 		failureCount:  options.FailureCount,
 		recoveryCount: options.RecoveryCount,
-		metricsListen: options.MetricsListen,
 	}
 	if fallback.failureCount == 0 {
 		fallback.failureCount = 10
@@ -133,12 +126,8 @@ func (f *Fallback) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			}
 			f.members = append(f.members, member)
 		}
+		return metrics.Register(scope, newFallbackCollector(f))
 	case adapter.StartStateStarted:
-		if f.metricsListen != "" {
-			if err := f.startMetrics(scope); err != nil {
-				return err
-			}
-		}
 		done := make(chan struct{})
 		scope.Add(func() error {
 			<-done
