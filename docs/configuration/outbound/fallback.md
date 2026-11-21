@@ -27,5 +27,13 @@ families. An omitted `status_code` accepts any 2xx response. All checks must
 pass for a cycle to succeed. Checks start immediately. Members are eligible
 in configured order until they reach the failure threshold.
 
+## Metrics
+
 Each fallback group registers its selection, health, and probe results with the
 [Metrics service](/configuration/service/metrics/) when configured.
+
+The `group` label identifies the fallback group by its tag.
+
+- `sing_box_fallback_selected` reports the active member.
+- `sing_box_fallback_healthy` reports health after applying the thresholds.
+- `sing_box_fallback_probe_success` reports the latest result for each probe.
