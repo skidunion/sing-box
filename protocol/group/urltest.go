@@ -44,6 +44,8 @@ type URLTest struct {
 	logger                       log.ContextLogger
 	tags                         []string
 	link                         string
+	checks                       []option.OutboundHealthCheck
+	checkTimeout                 time.Duration
 	interval                     time.Duration
 	tolerance                    uint16
 	idleTimeout                  time.Duration
@@ -60,6 +62,8 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:                       logger,
 		tags:                         options.Outbounds,
 		link:                         options.URL,
+		checks:                       options.Checks,
+		checkTimeout:                 time.Duration(options.CheckTimeout),
 		interval:                     time.Duration(options.Interval),
 		tolerance:                    options.Tolerance,
 		idleTimeout:                  time.Duration(options.IdleTimeout),
@@ -72,6 +76,15 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		if slices.Contains(outbound.tags[:i], tag) {
 			return nil, E.New("duplicate tag: ", tag)
 		}
+	}
+	if err := validateHealthChecks(outbound.checks); err != nil {
+		return nil, E.Cause(err, "urltest")
+	}
+	if len(outbound.checks) != 0 && outbound.link != "" {
+		return nil, E.New("urltest checks and url are mutually exclusive")
+	}
+	if outbound.checkTimeout < 0 || (outbound.checkTimeout != 0 && len(outbound.checks) == 0) {
+		return nil, E.New("urltest check_timeout requires checks and must be positive")
 	}
 	return outbound, nil
 }
@@ -91,6 +104,16 @@ func (s *URLTest) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if err != nil {
 			return err
 		}
+		if len(s.checks) != 0 {
+			timeout := s.checkTimeout
+			if timeout == 0 {
+				timeout = 5 * time.Second
+			}
+			if timeout >= group.interval {
+				return E.New("urltest check_timeout must be less than interval")
+			}
+			group.checked = &checkedURLTest{checks: s.checks, timeout: timeout}
+		}
 		s.group = group
 	case adapter.StartStateStarted:
 		s.group.PostStart()
@@ -104,6 +127,14 @@ func (s *URLTest) All() []string {
 }
 
 func (s *URLTest) Selected(network string) adapter.Outbound {
+	if s.group.checked != nil {
+		s.group.Touch()
+		member := s.group.checked.selected.Load()
+		if member != nil && slices.Contains(member.Network(), network) {
+			return member
+		}
+		return nil
+	}
 	var outbound adapter.Outbound
 	if network == N.NetworkUDP {
 		outbound = s.group.selectedOutboundUDP
@@ -124,6 +155,12 @@ func (s *URLTest) AttachConnection(closer io.Closer) func() {
 func (s *URLTest) References() []string {
 	group := s.group
 	if group == nil {
+		return nil
+	}
+	if group.checked != nil {
+		if member := group.checked.selected.Load(); member != nil {
+			return []string{member.Tag()}
+		}
 		return nil
 	}
 	var references []string
@@ -168,18 +205,11 @@ func (s *URLTest) InterfaceUpdated(ctx context.Context) {
 
 func (s *URLTest) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	s.group.Touch()
-	var outbound adapter.Outbound
-	switch N.NetworkName(network) {
-	case N.NetworkTCP:
-		outbound = s.group.selectedOutboundTCP
-	case N.NetworkUDP:
-		outbound = s.group.selectedOutboundUDP
-	default:
+	networkName := N.NetworkName(network)
+	if networkName != N.NetworkTCP && networkName != N.NetworkUDP {
 		return nil, E.Extend(N.ErrUnknownNetwork, network)
 	}
-	if outbound == nil {
-		outbound, _ = s.group.Select(network)
-	}
+	outbound := s.Selected(networkName)
 	if outbound == nil {
 		return nil, E.New("missing supported outbound")
 	}
@@ -194,10 +224,7 @@ func (s *URLTest) DialContext(ctx context.Context, network string, destination M
 
 func (s *URLTest) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	s.group.Touch()
-	outbound := s.group.selectedOutboundUDP
-	if outbound == nil {
-		outbound, _ = s.group.Select(N.NetworkUDP)
-	}
+	outbound := s.Selected(N.NetworkUDP)
 	if outbound == nil {
 		return nil, E.New("missing supported outbound")
 	}
@@ -222,6 +249,7 @@ type URLTestGroup struct {
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	history                      *urltest.HistoryStorage
+	checked                      *checkedURLTest
 	checking                     atomic.Bool
 	selectedOutboundTCP          adapter.Outbound
 	selectedOutboundUDP          adapter.Outbound
@@ -278,11 +306,11 @@ func (g *URLTestGroup) PostStart() {
 }
 
 func (g *URLTestGroup) Touch() {
+	g.access.Lock()
+	defer g.access.Unlock()
 	if !g.started {
 		return
 	}
-	g.access.Lock()
-	defer g.access.Unlock()
 	if g.ticker != nil {
 		g.lastActive.Store(time.Now())
 		return
@@ -296,6 +324,7 @@ func (g *URLTestGroup) Touch() {
 func (g *URLTestGroup) Close() error {
 	g.access.Lock()
 	defer g.access.Unlock()
+	g.started = false
 	if g.ticker == nil {
 		return nil
 	}
@@ -390,6 +419,9 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 		return make(map[string]uint16), nil
 	}
 	defer g.checking.Store(false)
+	if g.checked != nil {
+		return g.runCheckedURLTest(ctx), nil
+	}
 	result := URLTestOutbounds(ctx, g.outbound, g.history, g.logger, g.outbounds, g.link, g.interval, force)
 	g.performUpdateCheck()
 	return result, nil
@@ -501,6 +533,9 @@ func (b *urlTestBatch) test(outbounds []adapter.Outbound, link string, interval 
 }
 
 func (g *URLTestGroup) performUpdateCheck() {
+	if g.checked != nil {
+		return
+	}
 	g.updateAccess.Lock()
 	defer g.updateAccess.Unlock()
 	var (

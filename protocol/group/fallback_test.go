@@ -100,7 +100,7 @@ func TestFallbackProbeUsesMemberAndExpectedStatus(t *testing.T) {
 		{"/wrong-code", 4, true},
 		{"/good", 6, true},
 	} {
-		err := probeFallback(ctx, member, option.FallbackCheck{URL: server.URL + tc.path, IPVersion: tc.ipVersion, StatusCode: 204})
+		err := probeOutbound(ctx, member, option.OutboundHealthCheck{URL: server.URL + tc.path, IPVersion: tc.ipVersion, StatusCode: 204})
 		if (err != nil) != tc.wantError {
 			t.Errorf("%s IPv%d: got %v, want error %v", tc.path, tc.ipVersion, err, tc.wantError)
 		}
@@ -111,7 +111,7 @@ func TestFallbackMetricsDescribeActiveMemberAndFailedChecks(t *testing.T) {
 	f := &Fallback{
 		Adapter: outbound.NewAdapter(C.TypeFallback, "egress-out", nil, nil),
 		tags:    []string{"test-tunnel", "direct-out"},
-		checks:  []option.FallbackCheck{{URL: "https://example.com", IPVersion: 6}},
+		checks:  []option.OutboundHealthCheck{{URL: "https://example.com", IPVersion: 6}},
 	}
 	start := &fallbackStatus{members: make([]fallbackMemberStatus, 2)}
 	f.status.Store(advanceFallback(start, [][]bool{{false}, {false}}, 1, 1))
@@ -134,7 +134,7 @@ func TestFallbackMetricsDescribeActiveMemberAndFailedChecks(t *testing.T) {
 func TestFallbackWaitsForTenthFailedCycleByDefault(t *testing.T) {
 	outbound, err := NewFallback(context.Background(), nil, nil, "egress", option.FallbackOutboundOptions{
 		Outbounds: []string{"test-tunnel", "direct"},
-		Checks:    []option.FallbackCheck{{URL: "https://example.com", IPVersion: 6}},
+		Checks:    []option.OutboundHealthCheck{{URL: "https://example.com", IPVersion: 6}},
 	})
 	if err != nil {
 		t.Fatal(err)
