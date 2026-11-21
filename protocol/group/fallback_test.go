@@ -117,3 +117,28 @@ func TestFallbackMetricsDescribeActiveMemberAndFailedChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestFallbackWaitsForTenthFailedCycleByDefault(t *testing.T) {
+	outbound, err := NewFallback(context.Background(), nil, nil, "egress", option.FallbackOutboundOptions{
+		Outbounds: []string{"test-tunnel", "direct"},
+		Checks:    []option.FallbackCheck{{URL: "https://example.com", IPVersion: 6}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := outbound.(*Fallback)
+	if f.interval != 30*time.Second {
+		t.Fatalf("probe interval = %s, want 30s", f.interval)
+	}
+	state := f.status.Load()
+	for cycle := 1; cycle <= 10; cycle++ {
+		state = advanceFallback(state, [][]bool{{false}, {true}}, f.failureCount, f.recoveryCount)
+		want := 0
+		if cycle == 10 {
+			want = 1
+		}
+		if state.selected != want {
+			t.Fatalf("cycle %d: selected member %d, want %d", cycle, state.selected, want)
+		}
+	}
+}

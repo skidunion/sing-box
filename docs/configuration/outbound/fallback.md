@@ -14,9 +14,9 @@ Switching the selection leaves established connections on their previous member.
     {"url": "https://www.google.com/generate_204", "ip_version": 4, "status_code": 204},
     {"url": "https://www.google.com/generate_204", "ip_version": 6, "status_code": 204}
   ],
-  "interval": "15s",
+  "interval": "30s",
   "timeout": "5s",
-  "failure_count": 2,
+  "failure_count": 10,
   "recovery_count": 2,
   "metrics_listen": "127.0.0.1:9201"
 }

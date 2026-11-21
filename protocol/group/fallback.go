@@ -83,7 +83,7 @@ func NewFallback(ctx context.Context, _ adapter.Router, logger log.ContextLogger
 	}
 	interval := time.Duration(options.Interval)
 	if interval == 0 {
-		interval = 15 * time.Second
+		interval = 30 * time.Second
 	}
 	timeout := time.Duration(options.Timeout)
 	if timeout == 0 {
@@ -113,7 +113,7 @@ func NewFallback(ctx context.Context, _ adapter.Router, logger log.ContextLogger
 		metricsListen: options.MetricsListen,
 	}
 	if fallback.failureCount == 0 {
-		fallback.failureCount = 2
+		fallback.failureCount = 10
 	}
 	if fallback.recoveryCount == 0 {
 		fallback.recoveryCount = 2
