@@ -39,6 +39,7 @@ import (
 	"github.com/sagernet/sing-box/protocol/vless"
 	"github.com/sagernet/sing-box/protocol/vmess"
 	"github.com/sagernet/sing-box/service/api"
+	"github.com/sagernet/sing-box/service/metrics"
 	originca "github.com/sagernet/sing-box/service/origin_ca"
 	"github.com/sagernet/sing-box/service/resolved"
 	"github.com/sagernet/sing-box/service/ssmapi"
@@ -87,6 +88,7 @@ func OutboundRegistry() *outbound.Registry {
 
 	group.RegisterSelector(registry)
 	group.RegisterURLTest(registry)
+	group.RegisterFallback(registry)
 
 	socks.RegisterOutbound(registry)
 	http.RegisterOutbound(registry)
@@ -144,6 +146,7 @@ func ServiceRegistry() *service.Registry {
 	registry := service.NewRegistry()
 
 	api.RegisterService(registry)
+	metrics.RegisterService(registry)
 	resolved.RegisterService(registry)
 	ssmapi.RegisterService(registry)
 

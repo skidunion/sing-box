@@ -203,9 +203,11 @@ nav:
           - DNS: configuration/outbound/dns.md
           - Selector: configuration/outbound/selector.md
           - URLTest: configuration/outbound/urltest.md
+          - Fallback: configuration/outbound/fallback.md
       - Service:
           - configuration/service/index.md
           - sing-box API: configuration/service/api.md
+          - Metrics: configuration/service/metrics.md
           - DERP: configuration/service/derp.md
           - Resolved: configuration/service/resolved.md
           - SSM API: configuration/service/ssm-api.md
